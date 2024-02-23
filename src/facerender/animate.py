@@ -6,6 +6,7 @@ import warnings
 from skimage import img_as_ubyte
 import safetensors
 import safetensors.torch 
+from PIL import Image
 warnings.filterwarnings('ignore')
 
 
@@ -179,18 +180,33 @@ class AnimateFromCoeff():
             roll_c_seq = None
 
         frame_num = x['frame_num']
-
+        
         predictions_video = make_animation(source_image, source_semantics, target_semantics,
                                         self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
                                         yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True)
-
+        print("ANIMATE1: ",predictions_video.shape)
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
+        print("ANIMATE2: ",predictions_video.shape)
         predictions_video = predictions_video[:frame_num]
+        print("ANIMATE3: ",predictions_video.shape)
 
         video = []
         for idx in range(predictions_video.shape[0]):
             image = predictions_video[idx]
             image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
+            image1 = img_as_ubyte(image)
+            print("IN RA XEM NAO")
+
+            # Resize the image using OpenCV
+            img_size = 256  # Assuming this is defined somewhere
+            original_size = (256, 256)  # Assuming this is defined somewhere
+            image1 = cv2.resize(image1, (img_size, int(img_size * original_size[1] / original_size[0])))
+
+            # Convert to PIL Image
+            image1 = Image.fromarray(image1)
+
+            # Save the image as a PNG file
+            image1.save("koni_" + str(idx) + ".png")
             video.append(image)
         result = img_as_ubyte(video)
 

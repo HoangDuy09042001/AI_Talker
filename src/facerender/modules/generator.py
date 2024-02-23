@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from src.facerender.modules.util import ResBlock2d, SameBlock2d, UpBlock2d, DownBlock2d, ResBlock3d, SPADEResnetBlock
 from src.facerender.modules.dense_motion import DenseMotionNetwork
-
+import time
 
 class OcclusionAwareGenerator(nn.Module):
     """
@@ -18,6 +18,7 @@ class OcclusionAwareGenerator(nn.Module):
             self.dense_motion_network = DenseMotionNetwork(num_kp=num_kp, feature_channel=feature_channel,
                                                            estimate_occlusion_map=estimate_occlusion_map,
                                                            **dense_motion_params)
+            
         else:
             self.dense_motion_network = None
 
@@ -113,7 +114,8 @@ class OcclusionAwareGenerator(nn.Module):
         out = F.sigmoid(out)
 
         output_dict["prediction"] = out
-
+        print("Hello")
+        print(output_dict["prediction"])
         return output_dict
 
 
@@ -208,6 +210,8 @@ class OcclusionAwareSPADEGenerator(nn.Module):
         return F.grid_sample(inp, deformation)
 
     def forward(self, source_image, kp_driving, kp_source):
+        print("=========================GENERATOR=========================")
+        feature_3d_start = time.time()
         # Encoding (downsampling) part
         out = self.first(source_image)
         for i in range(len(self.down_blocks)):
@@ -217,10 +221,20 @@ class OcclusionAwareSPADEGenerator(nn.Module):
         # print(out.shape)
         feature_3d = out.view(bs, self.reshape_channel, self.reshape_depth, h ,w) 
         feature_3d = self.resblocks_3d(feature_3d)
-
+        print("Gen feature_3d: ", time.time()-feature_3d_start)
         # Transforming feature representation according to deformation and occlusion
         output_dict = {}
         if self.dense_motion_network is not None:
+            print("GEN TADA: ")
+            print("Gen kp_source: ", kp_source, kp_source["value"].shape)
+            print("Gen kp_driving: ", kp_driving, kp_driving["value"].shape)
+            # print("Gen feature_3d: ", feature_3d, feature_3d.shape)
+            is_different = not torch.allclose(feature_3d[0], feature_3d[1])
+            if is_different:
+                print("feature_3d[0] differs feature_3d[1]")
+            else:
+                print("feature_3d[0] and feature_3d[1] are the same")
+            start_time = time.time()
             dense_motion = self.dense_motion_network(feature=feature_3d, kp_driving=kp_driving,
                                                      kp_source=kp_source)
             output_dict['mask'] = dense_motion['mask']
@@ -229,6 +243,7 @@ class OcclusionAwareSPADEGenerator(nn.Module):
 
             if 'occlusion_map' in dense_motion:
                 occlusion_map = dense_motion['occlusion_map']
+                print("Gen occlusion_map: ", occlusion_map.shape)
                 output_dict['occlusion_map'] = occlusion_map
             else:
                 occlusion_map = None
@@ -245,11 +260,12 @@ class OcclusionAwareSPADEGenerator(nn.Module):
             if occlusion_map is not None:
                 if out.shape[2] != occlusion_map.shape[2] or out.shape[3] != occlusion_map.shape[3]:
                     occlusion_map = F.interpolate(occlusion_map, size=out.shape[2:], mode='bilinear')
+                print("Gen snow: ", out.shape)
                 out = out * occlusion_map
 
         # Decoding part
         out = self.decoder(out)
-
         output_dict["prediction"] = out
-        
+        print("Gen implement Time: ",time.time()-start_time)
+        print("=========================END GENERATOR=========================")
         return output_dict

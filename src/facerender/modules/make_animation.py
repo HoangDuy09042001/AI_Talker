@@ -3,6 +3,18 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm 
+import cv2
+from PIL import Image
+import numpy as np
+import mediapipe as mp
+import imageio
+import time
+import json
+import torch
+import pickle
+from skimage import img_as_ubyte
+import os
+from src.facerender.modules.landmark import get_landmark
 
 def normalize_kp(kp_source, kp_driving, kp_driving_initial, adapt_movement_scale=False,
                  use_relative_movement=False, use_relative_jacobian=False):
@@ -98,22 +110,74 @@ def keypoint_transformation(kp_canonical, he, wo_exp=False):
     return {'value': kp_transformed}
 
 
+def convert_genoutput(predictions, frame_num):
+  arrays = []
+  images = []
+  predictions_ts = torch.stack(predictions, dim=1)
+  predictions_video = predictions_ts
+  predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
+  predictions_video = predictions_video[:frame_num]
+  # print("make_ani predicted frame: ",predictions_video)
+  print("make_ani predicted frame shape: ",predictions_video.shape)
+  for idx in range(predictions_video.shape[0]):
+      image = predictions_video[idx]
+      image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
+      print("make_ani image array shape: ", image.shape)
+      # Convert to uint8
+      sub_array, sub_image = get_landmark(image, idx)
+      arrays.append(sub_array)
+      images.append(sub_image)
+  return arrays, images
+
+import json
+import numpy as np
+
+def append_data_to_json(existing_json_file, kp_driving, landmarks, image):
+    kp_driving_np = kp_driving.numpy()
+    
+    try:
+        # Try to open existing JSON file
+        with open(existing_json_file, 'r') as file:
+            existing_data = json.load(file)
+    except FileNotFoundError:
+        # If file doesn't exist, create an empty list
+        existing_data = []
+
+    # Append new data to existing data
+    existing_data.append({
+        "kp_driving": kp_driving_np.tolist(),
+        "landmarks": landmarks,
+        "image": image
+    })
+
+    # Write the updated data back to the file
+    with open(existing_json_file, 'w') as file:
+        json.dump(existing_data, file)
+
+    print("New data appended to existing JSON file.")
+
+
 
 def make_animation(source_image, source_semantics, target_semantics,
                             generator, kp_detector, he_estimator, mapping, 
                             yaw_c_seq=None, pitch_c_seq=None, roll_c_seq=None,
                             use_exp=True, use_half=False):
+    print("=========================MAKE ANIMATION=========================")
     with torch.no_grad():
         predictions = []
-
+        source_image_start_time = time.time()
         kp_canonical = kp_detector(source_image)
         he_source = mapping(source_semantics)
         kp_source = keypoint_transformation(kp_canonical, he_source)
-    
+        print("make_ani kp_source time: ", time.time()-source_image_start_time)
+        # for frame_idx in tqdm(range(2), 'Face Renderer:'):
         for frame_idx in tqdm(range(target_semantics.shape[1]), 'Face Renderer:'):
+            subpredictions = []
             # still check the dimension
-            # print(target_semantics.shape, source_semantics.shape)
+            print("make_ani target_semantics and source_semantics",target_semantics.shape, source_semantics.shape)
             target_semantics_frame = target_semantics[:, frame_idx]
+            print(f"make_ani target_semantics_frame {frame_idx}: ",target_semantics_frame.shape)
+            kp_drive_start = time.time()
             he_driving = mapping(target_semantics_frame)
             if yaw_c_seq is not None:
                 he_driving['yaw_in'] = yaw_c_seq[:, frame_idx]
@@ -125,6 +189,7 @@ def make_animation(source_image, source_semantics, target_semantics,
             kp_driving = keypoint_transformation(kp_canonical, he_driving)
                 
             kp_norm = kp_driving
+            print("make_ani kp_drive time: ", time.time()-kp_drive_start)
             out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
             '''
             source_image_new = out['prediction'].squeeze(1)
@@ -135,7 +200,38 @@ def make_animation(source_image, source_semantics, target_semantics,
             out = generator(source_image_new, kp_source=kp_source_new, kp_driving=kp_driving_new)
             '''
             predictions.append(out['prediction'])
+            subpredictions.append(out['prediction'])
+            landmarks, images = convert_genoutput(subpredictions, 2)
+            print("make_ani sublandmarks: ", landmarks, len(landmarks))
+            print("make_ani subimages: ", images, len(images))
+            print("type of save: ", type(kp_driving["value"]), type(landmarks), type(images))
+
+            # Create a dictionary to store all the data
+            data_dict = {
+                'kp_driving_value': kp_driving["value"],
+                'landmarks': landmarks,
+                'images': images
+            }
+
+            # Load existing data from data_dict.pt if it exists
+            name_pt = "test.pt"
+            if os.path.exists(name_pt):
+                # Load the existing data_dict
+                data_dict_array = torch.load(name_pt)
+            else:
+                # Create a new empty array if it doesn't exist
+                data_dict_array = []
+
+            # Append data_dict to the array
+            data_dict_array.append(data_dict)
+
+            # Save the updated array back to data_dict.pt
+            torch.save(data_dict_array, name_pt)
+
+            print("make_ani prediction ", len(predictions))
         predictions_ts = torch.stack(predictions, dim=1)
+        # print('Results: ', results.multi_face_landmarks)
+        ### the generated video is 256x256, so we keep the aspect ratio, 
     return predictions_ts
 
 class AnimateModel(torch.nn.Module):
